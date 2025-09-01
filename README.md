@@ -94,4 +94,4 @@ Il **Frontend** di **DeliveryGo** è sviluppato con **React Native** per permett
 ### Tecnologie utilizzate:
 - **React Native** per lo sviluppo dell'app mobile cross-platform.
 - **Firebase Cloud Messaging (FCM)** per la gestione delle notifiche push.
-- **Mappe (Google Maps / Mapbox)** per la visualizzazione della rotta ottimizzata e del tracciamento in tempo reale.
+- **Mappe (React Native Map)** per la visualizzazione della rotta ottimizzata e del tracciamento in tempo reale.
