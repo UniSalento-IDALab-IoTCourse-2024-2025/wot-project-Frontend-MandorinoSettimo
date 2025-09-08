@@ -46,6 +46,58 @@ export default function MapScreen() {
     const [isOnRoute, setIsOnRoute] = useState(false);
     const mqttClientRef = useRef(null);
     const [mqttReady, setMqttReady] = useState(false);   // 👈 NEW
+    const lastFixRef = React.useRef(null);
+
+    // Trova il punto/segmento della polyline più vicino a 'pos'
+    const nearestPointOnPolyline = (
+        coords: { latitude: number; longitude: number }[],
+        pos: { latitude: number; longitude: number }
+    ) => {
+        // proiezione approssimata per cercare il segmento più vicino
+        const toRad = (d: number) => (d * Math.PI) / 180;
+        const lat0 = toRad((coords[0]?.latitude ?? pos.latitude + pos.latitude) / 2);
+        const toXY = (c: { latitude: number; longitude: number }) => ({
+            x: c.longitude * Math.cos(lat0),
+            y: c.latitude,
+        });
+
+        const P = toXY(pos);
+        let best = { segIndex: 0, dist: Infinity };
+
+        for (let i = 0; i < coords.length - 1; i++) {
+            const Axy = toXY(coords[i]);
+            const Bxy = toXY(coords[i + 1]);
+            const vx = Bxy.x - Axy.x, vy = Bxy.y - Axy.y;
+            const wx = P.x - Axy.x,  wy = P.y - Axy.y;
+            const vv = vx * vx + vy * vy || 1e-12;
+            let t = (wx * vx + wy * vy) / vv;
+            if (t < 0) t = 0; else if (t > 1) t = 1;
+            const Cx = Axy.x + t * vx, Cy = Axy.y + t * vy;
+            const dx = P.x - Cx, dy = P.y - Cy;
+            const d2 = dx * dx + dy * dy;
+            if (d2 < best.dist) best = { segIndex: i, dist: d2 };
+        }
+        return best; // segIndex è l'indice del segmento [i, i+1] più vicino
+    };
+
+
+    // Converte LocationObject -> oggetto posizione con speedKmh/heading puliti
+    const toCurPos = (loc) => {
+        const { latitude, longitude, speed, heading } = loc.coords || {};
+        const speedKmh = (typeof speed === 'number' && speed >= 0) ? speed * 3.6 : undefined;
+        const headingDeg = (typeof heading === 'number' && heading >= 0) ? heading : undefined;
+        // filtra heading se velocità troppo bassa (rumore)
+        const headingClean = (speedKmh && speedKmh < 1) ? undefined : headingDeg;
+
+        return {
+            latitude,
+            longitude,
+            timestampIso: new Date().toISOString(),
+            speedKmh,
+            heading: headingClean,
+        };
+    };
+
 
     const clearActiveRoute = async () => {
         const vid = vehicleId || await AsyncStorage.getItem('vehicleId');
@@ -184,12 +236,56 @@ export default function MapScreen() {
     useEffect(() => {
         if (!currentPosition || !vehicleId || !activeRouteId || !mqttReady) return;
 
+        // helpers per fallback
+        const toRad = d => d * Math.PI / 180;
+        const haversineM = (lat1, lon1, lat2, lon2) => {
+            const R = 6371000;
+            const dLat = toRad(lat2 - lat1);
+            const dLon = toRad(lon2 - lon1);
+            const a =
+                Math.sin(dLat / 2) ** 2 +
+                Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+            return 2 * R * Math.asin(Math.sqrt(a));
+        };
+        const bearingDeg = (lat1, lon1, lat2, lon2) => {
+            const φ1 = toRad(lat1), φ2 = toRad(lat2), Δλ = toRad(lon2 - lon1);
+            const y = Math.sin(Δλ) * Math.cos(φ2);
+            const x = Math.cos(φ1) * Math.cos(φ2) - Math.sin(φ1) * Math.sin(φ2) * Math.cos(Δλ);
+            return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+        };
+
         const interval = setInterval(() => {
+            // base payload dal fix corrente
             const payload = {
                 lat: currentPosition.latitude,
                 lon: currentPosition.longitude,
-                timestamp: new Date().toISOString()
+                timestamp: currentPosition.timestampIso || new Date().toISOString(),
             };
+
+            // valori dal device (possono essere 0/undefined nei tap simulati)
+            let sp = currentPosition.speedKmh;
+            let hd = currentPosition.heading;
+
+            // Fallback: se sp mancante o molto bassa, o heading mancante → calcola da fix precedente
+            const prev = lastFixRef.current;
+            if ((sp == null || sp <= 0.5 || hd == null) && prev) {
+                const dt = (new Date(payload.timestamp) - new Date(prev.timestamp)) / 1000; // s
+                if (dt > 0.5) {
+                    const dM = haversineM(prev.lat, prev.lon, payload.lat, payload.lon);     // m
+                    const spKmh = (dM / dt) * 3.6;
+                    const brg = bearingDeg(prev.lat, prev.lon, payload.lat, payload.lon);
+
+                    if (sp == null || sp <= 0.5) sp = spKmh;
+                    if (hd == null && isFinite(brg)) hd = brg;
+                }
+            }
+
+            if (typeof sp === 'number' && isFinite(sp)) payload.speedKmh = sp;
+            if (typeof hd === 'number' && isFinite(hd)) payload.heading  = hd;
+
+            // memorizza per il prossimo giro
+            lastFixRef.current = { lat: payload.lat, lon: payload.lon, timestamp: payload.timestamp };
+
             const topic = `vehicle/${vehicleId}/position`;
             mqttClientRef.current?.publish(topic, JSON.stringify(payload), { qos: 1 }, (err) => {
                 if (err) console.log('❌ MQTT publish error:', err);
@@ -517,7 +613,7 @@ export default function MapScreen() {
     }, [activeRouteId, isOnRoute]);
 
     useEffect(() => {
-        let subscription: Location.LocationSubscription;
+        let subscription;
 
         const setupLocation = async () => {
             const { status } = await Location.requestForegroundPermissionsAsync();
@@ -527,38 +623,26 @@ export default function MapScreen() {
             }
 
             const loc = await Location.getCurrentPositionAsync({});
-            if (loc.coords) {
-                setInitialRegion((prev) => prev ?? {
-                    latitude: loc.coords.latitude,
-                    longitude: loc.coords.longitude,
-                    latitudeDelta: 0.05,
-                    longitudeDelta: 0.05,
-                });
+            if (!loc?.coords) return;
+            setInitialRegion(prev => prev ?? {
+                latitude: loc.coords.latitude,
+                longitude: loc.coords.longitude,
+                latitudeDelta: 0.05,
+                longitudeDelta: 0.05,
+            });
 
-                if (useRealPosition) {
-                    subscription = await Location.watchPositionAsync(
-                        {
-                            accuracy: Location.Accuracy.High,
-                            timeInterval: 5000,
-                            distanceInterval: 1,
-                        },
-                        (loc) => {
-                            if (loc.coords) {
-                                setCurrentPosition(loc.coords);
-                            }
-                        }
-                    );
-                } else {
-                    setCurrentPosition(loc.coords);
-                }
+            if (useRealPosition) {
+                subscription = await Location.watchPositionAsync(
+                    { accuracy: Location.Accuracy.High, timeInterval: 5000, distanceInterval: 1 },
+                    (l) => setCurrentPosition(toCurPos(l))
+                );
+            } else {
+                setCurrentPosition(toCurPos(loc)); // simulata
             }
         };
 
         setupLocation();
-
-        return () => {
-            if (subscription) subscription.remove();
-        };
+        return () => { if (subscription) subscription.remove(); };
     }, [useRealPosition]);
 
     useEffect(() => {
@@ -856,8 +940,11 @@ export default function MapScreen() {
                     onPress={(e) => {
                         if (!useRealPosition) {
                             const coord = e.nativeEvent.coordinate;
-                            setCurrentPosition(coord);
-                            console.log("📍 Posizione simulata:", coord);
+                            // crea un LocationObject minimale per riusare toCurPos
+                            const fakeLoc = { coords: { latitude: coord.latitude, longitude: coord.longitude, speed: 0, heading: undefined } };
+                            const cur = toCurPos(fakeLoc);
+                            setCurrentPosition(cur);
+                            console.log("📍 Posizione simulata:", cur);
                         }
                     }}
                 >
@@ -877,28 +964,61 @@ export default function MapScreen() {
                     ))}
                     {(() => {
                         const seg = realPath[currentSegmentIndex];
-                        const hasGeom = !!(seg && Array.isArray(seg.geometry) && seg.geometry.length > 0);
+                        const hasGeom = Array.isArray(seg?.geometry) && seg.geometry.length > 1;
+                        if (!hasGeom) return null;
+
+                        // se ho la tua posizione, disegno la linea da "te" → fine segmento;
+                        // altrimenti mostro l'intero segmento
+                        let coords = seg.geometry;
+
+                        if (currentPosition) {
+                            const { segIndex } = nearestPointOnPolyline(seg.geometry, currentPosition);
+
+                            // threshold: se sei molto lontano dalla tratta, mostra tutto per non creare "salti"
+                            const OFFROUTE_M = 50;
+                            const distToNearestVertex = getDistanceInMeters(
+                                currentPosition,
+                                seg.geometry[segIndex] // stima rapida
+                            );
+
+                            if (distToNearestVertex <= OFFROUTE_M) {
+                                // 👉 linea che parte ESATTAMENTE dal marker della tua posizione
+                                //    e poi prosegue dai punti successivi della polyline.
+                                //    (se preferisci "snap" alla linea, sostituisci currentPosition con
+                                //     un punto proiettato sul segmento: posso darti la variante)
+                                coords = [currentPosition, ...seg.geometry.slice(segIndex + 1)];
+                            } else {
+                                // off-route → mostra l'intero segmento
+                                coords = seg.geometry;
+                            }
+                        }
+
+                        // Se rimane un solo punto, non disegniamo nulla
+                        if (coords.length < 2) return (
+                            <Marker
+                                coordinate={seg.geometry[seg.geometry.length - 1]}
+                                title={`Tappa ${currentSegmentIndex + 1}`}
+                                pinColor="orange"
+                            />
+                        );
 
                         return (
                             <>
-                                {hasGeom && (
-                                    <Polyline
-                                        coordinates={seg.geometry}
-                                        strokeColor="blue"
-                                        strokeWidth={4}
-                                    />
-                                )}
-
-                                {hasGeom && (
-                                    <Marker
-                                        coordinate={seg.geometry[seg.geometry.length - 1]} // ultimo punto
-                                        title={`Tappa ${currentSegmentIndex + 1}`}
-                                        pinColor="orange"
-                                    />
-                                )}
+                                <Polyline
+                                    key={`seg-${seg.id || currentSegmentIndex}-${coords.length}`}
+                                    coordinates={coords}
+                                    strokeColor="blue"
+                                    strokeWidth={4}
+                                />
+                                <Marker
+                                    coordinate={seg.geometry[seg.geometry.length - 1]}
+                                    title={`Tappa ${currentSegmentIndex + 1}`}
+                                    pinColor="orange"
+                                />
                             </>
                         );
                     })()}
+
 
                 </MapView>
             )}
@@ -1025,7 +1145,7 @@ export default function MapScreen() {
     );
 }
 
-    const styles = StyleSheet.create({
+const styles = StyleSheet.create({
     container: { flex: 1 },
 
 });

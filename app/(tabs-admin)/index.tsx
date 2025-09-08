@@ -57,6 +57,16 @@ export default function AdminHomeScreen() {
                 <Text style={styles.buttonText}>Assegna utenti</Text>
             </TouchableOpacity>
 
+
+
+            {/* Vedi mappa complessiva */}
+            <TouchableOpacity
+                style={styles.button}
+                onPress={() => router.push('../(tabs-admin)/admin-map')}
+            >
+                <Text style={styles.buttonText}>Mappa</Text>
+            </TouchableOpacity>
+
             {/* Logout */}
             <TouchableOpacity
                 style={[styles.button, styles.logoutButton]}
@@ -64,6 +74,7 @@ export default function AdminHomeScreen() {
             >
                 <Text style={styles.buttonText}>Logout</Text>
             </TouchableOpacity>
+
         </View>
     );
 }

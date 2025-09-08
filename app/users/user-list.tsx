@@ -62,6 +62,8 @@ export default function ViewUsersScreen() {
     );
 
     const renderUserItem = ({ item }: { item: User }) => {
+        const isOnRoute = item.userStatus === 'ON_ROUTE';
+        const canUpdate = !isOnRoute;
         let statusColorStyle = styles.statusRed;
         let containerStyle = styles.unavailableUser;
         let statusLabel = 'Non disponibile';
@@ -93,22 +95,33 @@ export default function ViewUsersScreen() {
                     Stato: {statusLabel}
                 </Text>
 
-                {/* Pulsante Aggiorna stato */}
                 <TouchableOpacity
-                    style={styles.updateButton}
-                    onPress={() =>
+                    style={[styles.updateButton, !canUpdate && styles.updateButtonDisabled]}
+                    onPress={() => {
+                        if (!canUpdate) {
+                            Alert.alert('Non modificabile', 'Lo stato non può essere aggiornato mentre è "Per strada".');
+                            return;
+                        }
                         router.push({
-                            pathname: '/users/update-status',        // 👈 crea/usa questa screen
+                            pathname: '/users/update-status',
                             params: { id: item.id, currentStatus: item.userStatus },
-                        })
-                    }
+                        });
+                    }}
+                    disabled={!canUpdate}
                 >
-                    <Text style={styles.updateButtonText}>Aggiorna stato</Text>
+                    <Text style={[styles.updateButtonText, !canUpdate && styles.updateButtonTextDisabled]}>
+                        {canUpdate ? 'Aggiorna stato' : 'Non modificabile'}
+                    </Text>
                 </TouchableOpacity>
+
+                {!canUpdate && (
+                    <Text style={styles.lockedHint}>
+                        Non è possibile modificare un utente in consegna.
+                    </Text>
+                )}
             </View>
         );
     };
-
     return (
         <View style={styles.container}>
             <Text style={styles.title}>Camionisti registrati</Text>
@@ -200,4 +213,10 @@ const styles = StyleSheet.create({
         alignItems: 'center',
     },
     updateButtonText: { color: '#fff', fontWeight: '700' },
+
+    updateButtonDisabled: { backgroundColor: '#9ca3af' },
+    updateButtonTextDisabled: { color: '#f3f4f6' },
+    lockedHint: { marginTop: 6, fontSize: 12, color: '#6b7280' },
+
 });
+

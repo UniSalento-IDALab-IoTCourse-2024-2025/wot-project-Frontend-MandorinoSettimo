@@ -159,10 +159,13 @@ export default function RootLayout() {
                         headerTitleStyle: { fontWeight: 'bold', fontSize: 15 },
                     }}
                 />
+
+
                 <Stack.Screen
                     name="users/update-status"
                     options={{
                         title: 'Aggiorna stato utente',
+                        headerBackTitle: 'Indietro',
                         headerStyle: { backgroundColor: '#06631e' },
                         headerTintColor: '#ffffff',
                         headerTitleStyle: { fontWeight: 'bold', fontSize: 15 },
@@ -172,6 +175,7 @@ export default function RootLayout() {
                     name="ordini/assign-driver"
                     options={{
                         title: 'Assegna camionista',
+
                         headerBackVisible: false,
                         headerStyle: { backgroundColor: '#06631e' },
                         headerTintColor: '#ffffff',

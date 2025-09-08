@@ -43,6 +43,18 @@ export default function AdminTabLayout() {
             />
 
             <Tabs.Screen
+                name="admin-map"
+                options={{
+                    title: 'Mappa',
+                    tabBarIcon: ({ color }) => (
+                        <MaterialIcons name="map" size={30} color={color} />
+                    ),
+                }}
+            />
+
+
+
+            <Tabs.Screen
                 name="vehicle-list"
                 options={{
                     title: 'Veicoli',
